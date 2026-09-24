@@ -1,6 +1,8 @@
 #ifndef TOKEN_H
 #define TOKEN_H
 
+#include <stddef.h>
+
 /* Типы токенов, которые может встретить лексер */
 typedef enum {
     TOKEN_WORD,       /* Обычное слово, команда или аргумент */
@@ -20,7 +22,8 @@ typedef enum {
 /* Структура одного токена */
 typedef struct {
     token_type_t type;
-    char *lexeme;     /* Текст токена. Для операторов может быть NULL */
+    char *lexeme;
+    size_t position;
 } token_t;
 
 #endif /* TOKEN_H */

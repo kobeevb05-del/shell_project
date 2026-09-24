@@ -1,17 +1,21 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c2x -D_POSIX_C_SOURCE=200809L
+CFLAGS = -Wall -Wextra -std=c23 -D_POSIX_C_SOURCE=200809L
 TARGET = myshell
+SOURCES = src/main.c src/lexer.c src/parser.c src/ast.c
 
-
-SRCS = src/main.c
+.PHONY: all debug clean test
 
 all: $(TARGET)
 
-$(TARGET): $(SRCS)
-	$(CC) $(CFLAGS) $(SRCS) -o $(TARGET)
+$(TARGET): $(SOURCES) src/token.h src/lexer.h src/ast.h src/parser.h
+	$(CC) $(CFLAGS) $(SOURCES) -o $@
 
-debug: CFLAGS += -g -fsanitize=address,undefined
-debug: clean $(TARGET)
+debug:
+	$(MAKE) clean
+	$(MAKE) CFLAGS="$(CFLAGS) -g -fsanitize=address,undefined" $(TARGET)
+
+test: $(TARGET)
+	sh tests/test.sh ./$(TARGET)
 
 clean:
 	rm -f $(TARGET)
