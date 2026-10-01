@@ -1,13 +1,14 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c23 -D_POSIX_C_SOURCE=200809L
-TARGET = myshell
-SOURCES = src/main.c src/lexer.c src/parser.c src/ast.c
+TARGET = mysh
+SOURCES = src/main.c src/lexer.c
+HEADERS = src/token.h src/lexer.h
 
 .PHONY: all debug clean test
 
 all: $(TARGET)
 
-$(TARGET): $(SOURCES) src/token.h src/lexer.h src/ast.h src/parser.h
+$(TARGET): $(SOURCES) src/token.h src/lexer.h
 	$(CC) $(CFLAGS) $(SOURCES) -o $@
 
 debug:
@@ -18,4 +19,4 @@ test: $(TARGET)
 	sh tests/test.sh ./$(TARGET)
 
 clean:
-	rm -f $(TARGET)
+	rm -f mysh myshell

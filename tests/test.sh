@@ -59,6 +59,8 @@ check_ast '(echo one; echo two) >out' 'Subshell'
 check_ast 'echo hi # comment' 'Word "hi"'
 check_tokens 'echo one & echo two' 'BACKGROUND'
 check_ast 'echo one & echo two' '&'
+check_ast 'echo one
+echo two' ';'
 check_ast 'echo one;;echo two' 'Empty'
 
 check_error "echo 'unclosed"

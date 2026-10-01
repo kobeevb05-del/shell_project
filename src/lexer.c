@@ -107,126 +107,215 @@ static token_type_t operator_type(char c, char next, size_t *width) {
     }
 }
 
-bool lexer_tokenize(const char *input, token_list_t *list, lexer_error_t *error) {
+bool lexer_tokenize(const char *input, token_list_t *list,
+                    lexer_error_t *error) {
     token_list_init(list);
+
     if (error != NULL) {
         *error = (lexer_error_t){0};
     }
 
     size_t i = 0;
+
     while (input[i] != '\0') {
-        if (input[i] == ' ' || input[i] == '\t' || input[i] == '\n' ||
-            input[i] == '\r') {
+        /* Продолжение строки между токенами. */
+        if (input[i] == '\\' && input[i + 1] == '\n') {
+            i += 2;
+            continue;
+        }
+
+        if (input[i] == ' ' || input[i] == '\t') {
             ++i;
             continue;
         }
+
+        /* Сохраняем границу строки отдельным токеном. */
+        if (input[i] == '\n') {
+            if (!add_token(list, TOKEN_NEWLINE, NULL, i + 1)) {
+                return fail(list, error, i + 1, "out of memory");
+            }
+
+            ++i;
+            continue;
+        }
+
+        /* Здесь мы находимся на границе токенов. */
         if (input[i] == '#') {
             while (input[i] != '\0' && input[i] != '\n') {
                 ++i;
             }
             continue;
         }
+
         if (is_operator(input[i])) {
             size_t position = i;
+            size_t next = i + 1;
+
+            /*
+             * Продолжение строки может находиться между
+             * двумя символами одного оператора.
+             */
+            while (input[next] == '\\' && input[next + 1] == '\n') {
+                next += 2;
+            }
+
             size_t width;
-            token_type_t type = operator_type(input[i], input[i + 1], &width);
+            token_type_t type =
+                operator_type(input[i], input[next], &width);
+
             char *lexeme = malloc(width + 1);
             if (lexeme == NULL) {
-                return fail(list, error, position + 1, "out of memory");
+                return fail(list, error, position + 1,
+                            "out of memory");
             }
-            memcpy(lexeme, input + i, width);
+
+            lexeme[0] = input[i];
+
+            if (width == 2) {
+                lexeme[1] = input[next];
+            }
+
             lexeme[width] = '\0';
+
             if (!add_token(list, type, lexeme, position + 1)) {
                 free(lexeme);
-                return fail(list, error, position + 1, "out of memory");
+                return fail(list, error, position + 1,
+                            "out of memory");
             }
-            i += width;
+
+            if (width == 2) {
+                i = next + 1;
+            } else {
+                ++i;
+            }
+
             continue;
         }
 
         size_t start = i;
         bool started = false;
         string_builder_t builder = {0};
-        while (input[i] != '\0' && input[i] != ' ' && input[i] != '\t' &&
-               input[i] != '\n' && input[i] != '\r' && !is_operator(input[i])) {
+
+        while (input[i] != '\0' &&
+               input[i] != ' ' &&
+               input[i] != '\t' &&
+               input[i] != '\n' &&
+               !is_operator(input[i])) {
             char c = input[i];
+
             if (c == '\'') {
-                size_t quote_position = i++;
+                size_t quote_position = i;
+                ++i;
                 started = true;
+
+                /* В одинарных кавычках всё сохраняется буквально. */
                 while (input[i] != '\0' && input[i] != '\'') {
-                    if (!builder_append(&builder, input[i++])) {
+                    if (!builder_append(&builder, input[i])) {
                         free(builder.data);
-                        return fail(list, error, quote_position + 1, "out of memory");
+                        return fail(list, error, quote_position + 1,
+                                    "out of memory");
                     }
+                    ++i;
                 }
+
                 if (input[i] == '\0') {
                     free(builder.data);
                     return fail(list, error, quote_position + 1,
                                 "unterminated single quote");
                 }
+
                 ++i;
             } else if (c == '"') {
-                size_t quote_position = i++;
+                size_t quote_position = i;
+                ++i;
                 started = true;
+
                 while (input[i] != '\0' && input[i] != '"') {
                     if (input[i] == '\\') {
                         char next = input[i + 1];
-                        if (next == '"' || next == '\\' || next == '\n') {
-                            i++;
-                            if (next == '\n') {
-                                ++i;
-                                continue;
-                            }
-                            c = input[i++];
+
+                        if (next == '\n') {
+                            i += 2;
+                            continue;
+                        }
+
+                        if (next == '"' || next == '\\') {
+                            c = next;
+                            i += 2;
                         } else {
-                            c = input[i++];
+                            /* Перед остальными символами сохраняем \. */
+                            c = input[i];
+                            ++i;
                         }
                     } else {
-                        c = input[i++];
+                        c = input[i];
+                        ++i;
                     }
+
                     if (!builder_append(&builder, c)) {
                         free(builder.data);
-                        return fail(list, error, quote_position + 1, "out of memory");
+                        return fail(list, error, quote_position + 1,
+                                    "out of memory");
                     }
                 }
+
                 if (input[i] == '\0') {
                     free(builder.data);
                     return fail(list, error, quote_position + 1,
                                 "unterminated double quote");
                 }
+
                 ++i;
             } else if (c == '\\') {
-                size_t slash_position = i++;
+                size_t slash_position = i;
+                ++i;
+
                 if (input[i] == '\0') {
                     free(builder.data);
                     return fail(list, error, slash_position + 1,
                                 "backslash at end of input");
                 }
+
+                /* Продолжение строки внутри слова. */
                 if (input[i] == '\n') {
                     ++i;
                     continue;
                 }
+
                 started = true;
-                if (!builder_append(&builder, input[i++])) {
+
+                if (!builder_append(&builder, input[i])) {
                     free(builder.data);
-                    return fail(list, error, slash_position + 1, "out of memory");
+                    return fail(list, error, slash_position + 1,
+                                "out of memory");
                 }
+
+                ++i;
             } else {
                 started = true;
-                if (!builder_append(&builder, input[i++])) {
+
+                if (!builder_append(&builder, input[i])) {
                     free(builder.data);
-                    return fail(list, error, i, "out of memory");
+                    return fail(list, error, i + 1,
+                                "out of memory");
                 }
+
+                ++i;
             }
         }
+
         if (started) {
             char *lexeme = builder_finish(&builder);
+
             if (lexeme == NULL) {
-                return fail(list, error, start + 1, "out of memory");
+                return fail(list, error, start + 1,
+                            "out of memory");
             }
+
             if (!add_token(list, TOKEN_WORD, lexeme, start + 1)) {
                 free(lexeme);
-                return fail(list, error, start + 1, "out of memory");
+                return fail(list, error, start + 1,
+                            "out of memory");
             }
         } else {
             free(builder.data);
@@ -236,23 +325,39 @@ bool lexer_tokenize(const char *input, token_list_t *list, lexer_error_t *error)
     if (!add_token(list, TOKEN_EOF, NULL, i + 1)) {
         return fail(list, error, i + 1, "out of memory");
     }
+
     return true;
 }
 
 const char *token_type_name(token_type_t type) {
     switch (type) {
-    case TOKEN_WORD: return "WORD";
-    case TOKEN_PIPE: return "PIPE";
-    case TOKEN_AND: return "AND";
-    case TOKEN_OR: return "OR";
-    case TOKEN_BG: return "BACKGROUND";
-    case TOKEN_SEQ: return "SEQUENCE";
-    case TOKEN_REDIR_IN: return "REDIR_IN";
-    case TOKEN_REDIR_OUT: return "REDIR_OUT";
-    case TOKEN_REDIR_APP: return "REDIR_APPEND";
-    case TOKEN_LPAREN: return "LPAREN";
-    case TOKEN_RPAREN: return "RPAREN";
-    case TOKEN_EOF: return "EOF";
+    case TOKEN_WORD:
+        return "WORD";
+    case TOKEN_PIPE:
+        return "PIPE";
+    case TOKEN_AND:
+        return "AND";
+    case TOKEN_OR:
+        return "OR";
+    case TOKEN_BG:
+        return "BACKGROUND";
+    case TOKEN_SEQ:
+        return "SEQUENCE";
+    case TOKEN_REDIR_IN:
+        return "REDIR_IN";
+    case TOKEN_REDIR_OUT:
+        return "REDIR_OUT";
+    case TOKEN_REDIR_APP:
+        return "REDIR_APPEND";
+    case TOKEN_LPAREN:
+        return "LPAREN";
+    case TOKEN_RPAREN:
+        return "RPAREN";
+    case TOKEN_NEWLINE:
+        return "NEWLINE";
+    case TOKEN_EOF:
+        return "EOF";
     }
+
     return "UNKNOWN";
 }

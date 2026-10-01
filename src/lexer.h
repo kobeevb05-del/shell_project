@@ -1,3 +1,7 @@
+/*
+ * Заголовочный файл лексического анализатора (lexer.h).
+ * Определяет динамический список токенов и интерфейс токенизации.
+ */
 #ifndef LEXER_H
 #define LEXER_H
 
@@ -6,9 +10,9 @@
 #include <stddef.h> /* Для size_t */
 
 typedef struct {
-    token_t *tokens;  /* Указатель на массив токенов */
-    size_t count;     /* Текущее количество токенов */
-    size_t capacity;  /* Сколько памяти выделено (вместимость) */
+    token_t *tokens;  /* Динамический массив токенов */
+    size_t count;     /* Сколько токенов записано */
+    size_t capacity;  /* На сколько токенов выделена память */
 } token_list_t;
 
 typedef struct {

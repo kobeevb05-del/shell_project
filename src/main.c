@@ -1,144 +1,243 @@
-#include "ast.h"
+/*
+ * Точка входа программы.
+ * Читает ввод, вызывает лексер и выводит токены.
+ */
 #include "lexer.h"
-#include "parser.h"
 
+#include <errno.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-typedef enum {
-    MODE_AST,
-    MODE_TOKENS
-} output_mode_t;
+/* Повторяем чтение, если оно было прервано сигналом. */
+static ssize_t read_line(char **line, size_t *capacity, FILE *stream) {
+    for (;;) {
+        errno = 0;
+        ssize_t result = getline(line, capacity, stream);
 
-static char *read_all(FILE *input) {
+        if (result >= 0 || feof(stream)) {
+            return result;
+        }
+
+        if (errno != EINTR) {
+            return -1;
+        }
+
+        clearerr(stream);
+    }
+}
+
+/* Читаем весь неинтерактивный ввод в одну строку. */
+static char *read_all(FILE *stream) {
     char *line = NULL;
     size_t line_capacity = 0;
+
     char *buffer = NULL;
     size_t length = 0;
     size_t capacity = 0;
+
     ssize_t bytes;
 
-    while ((bytes = getline(&line, &line_capacity, input)) != -1) {
-        size_t required = length + (size_t)bytes + 1;
+    while ((bytes = read_line(&line, &line_capacity, stream)) >= 0) {
+        size_t chunk_size = (size_t)bytes;
+
+        if (chunk_size > SIZE_MAX - length - 1) {
+            free(line);
+            free(buffer);
+            errno = ENOMEM;
+            return NULL;
+        }
+
+        size_t required = length + chunk_size + 1;
+
         if (required > capacity) {
+            /* Начальная вместимость — 256 байт, далее удваиваем. */
             size_t new_capacity = capacity == 0 ? 256 : capacity;
+
             while (new_capacity < required) {
+                if (new_capacity > SIZE_MAX / 2) {
+                    new_capacity = required;
+                    break;
+                }
                 new_capacity *= 2;
             }
+
             char *new_buffer = realloc(buffer, new_capacity);
+
             if (new_buffer == NULL) {
                 free(line);
                 free(buffer);
+                errno = ENOMEM;
                 return NULL;
             }
+
             buffer = new_buffer;
             capacity = new_capacity;
         }
-        memcpy(buffer + length, line, (size_t)bytes);
-        length += (size_t)bytes;
+
+        memcpy(buffer + length, line, chunk_size);
+        length += chunk_size;
         buffer[length] = '\0';
     }
+
+    int saved_errno = errno;
+    bool read_failed = !feof(stream);
     free(line);
-    if (ferror(input)) {
+
+    if (read_failed) {
         free(buffer);
+        errno = saved_errno != 0 ? saved_errno : EIO;
         return NULL;
     }
+
     if (buffer == NULL) {
         buffer = calloc(1, 1);
     }
+
     return buffer;
 }
 
+/* Печатаем текст токена, показывая специальные символы явно. */
 static void print_quoted(const char *text) {
     putchar('"');
+
     for (const unsigned char *cursor = (const unsigned char *)text;
          *cursor != '\0'; ++cursor) {
         switch (*cursor) {
-        case '\\': fputs("\\\\", stdout); break;
-        case '"': fputs("\\\"", stdout); break;
-        case '\n': fputs("\\n", stdout); break;
-        case '\t': fputs("\\t", stdout); break;
-        case '\r': fputs("\\r", stdout); break;
-        default: putchar(*cursor); break;
+        case '\\':
+            fputs("\\\\", stdout);
+            break;
+        case '"':
+            fputs("\\\"", stdout);
+            break;
+        case '\n':
+            fputs("\\n", stdout);
+            break;
+        case '\t':
+            fputs("\\t", stdout);
+            break;
+        case '\r':
+            fputs("\\r", stdout);
+            break;
+        default:
+            putchar(*cursor);
+            break;
         }
     }
+
     putchar('"');
 }
 
 static void print_tokens(const token_list_t *tokens) {
     for (size_t i = 0; i < tokens->count; ++i) {
         const token_t *token = &tokens->tokens[i];
-        printf("%zu: %-13s", token->position, token_type_name(token->type));
+
+        printf("%zu: %-13s",
+               token->position,
+               token_type_name(token->type));
+
         if (token->lexeme != NULL) {
             putchar(' ');
             print_quoted(token->lexeme);
         }
+
         putchar('\n');
     }
 }
 
-static int process_input(const char *input, output_mode_t mode) {
+static int process_input(const char *input) {
     token_list_t tokens;
-    lexer_error_t lexer_error;
-    if (!lexer_tokenize(input, &tokens, &lexer_error)) {
-        fprintf(stderr, "lexer error at character %zu: %s\n",
-                lexer_error.position, lexer_error.message);
+    lexer_error_t error;
+
+    if (!lexer_tokenize(input, &tokens, &error)) {
+        fprintf(stderr, "mysh: lexer: byte %zu: %s\n",
+                error.position, error.message);
         return 2;
-    }
-    if (mode == MODE_TOKENS) {
-        print_tokens(&tokens);
-        token_list_free(&tokens);
-        return 0;
     }
 
-    ast_list_t *ast = NULL;
-    parser_error_t parser_error;
-    if (!parser_parse(&tokens, &ast, &parser_error)) {
-        fprintf(stderr, "parser error at character %zu: %s\n",
-                parser_error.position, parser_error.message);
-        token_list_free(&tokens);
-        return 2;
-    }
-    ast_print(stdout, ast);
-    ast_free(ast);
+    print_tokens(&tokens);
     token_list_free(&tokens);
+
+    if (ferror(stdout) || fflush(stdout) == EOF) {
+        fputs("mysh: output: failed to write tokens\n", stderr);
+        return 1;
+    }
+
     return 0;
 }
 
 int main(int argc, char **argv) {
-    output_mode_t mode = MODE_AST;
     char *input = NULL;
     bool read_from_stdin = true;
-    if (argc == 2 && strcmp(argv[1], "--dump-tokens") == 0) {
-        mode = MODE_TOKENS;
-    } else if (argc == 2 && strcmp(argv[1], "--dump-ast") == 0) {
-        mode = MODE_AST;
-    } else if (argc == 3 && strcmp(argv[1], "-c") == 0) {
+
+    if (argc == 3 && strcmp(argv[1], "-c") == 0) {
         input = argv[2];
         read_from_stdin = false;
-    } else if (argc != 1) {
-        fprintf(stderr, "usage: %s [--dump-tokens | --dump-ast | -c command]\n",
+    } else if (argc == 1) {
+        /* Чтение из стандартного ввода. */
+    } else if (argc == 2 &&
+               strcmp(argv[1], "--dump-tokens") == 0) {
+        /* Вывод токенов после чтения стандартного ввода до EOF. */
+    } else {
+        fprintf(stderr,
+                "usage: %s [--dump-tokens | -c command]\n",
                 argv[0]);
         return 2;
     }
 
-    if (read_from_stdin) {
-        if (isatty(STDIN_FILENO) && argc == 1) {
-            fputs("mysh> ", stdout);
-            fflush(stdout);
+    if (read_from_stdin && argc == 1 && isatty(STDIN_FILENO)) {
+        char *line = NULL;
+        size_t capacity = 0;
+        int last_status = 0;
+
+        for (;;) {
+            if (fputs("mysh> ", stdout) == EOF ||
+                fflush(stdout) == EOF) {
+                fputs("mysh: output: failed to write prompt\n",
+                      stderr);
+                last_status = 1;
+                break;
+            }
+
+            ssize_t bytes = read_line(&line, &capacity, stdin);
+
+            if (bytes < 0) {
+                if (feof(stdin)) {
+                    putchar('\n');
+                } else {
+                    int saved_errno = errno != 0 ? errno : EIO;
+                    fprintf(stderr, "mysh: input: %s\n",
+                            strerror(saved_errno));
+                    last_status = 1;
+                }
+
+                break;
+            }
+
+            last_status = process_input(line);
         }
+
+        free(line);
+        return last_status;
+    }
+
+    if (read_from_stdin) {
         input = read_all(stdin);
+
         if (input == NULL) {
-            fputs("myshell: failed to read input\n", stderr);
+            fprintf(stderr, "mysh: input: %s\n", strerror(errno));
             return 1;
         }
     }
-    int result = process_input(input, mode);
+
+    int result = process_input(input);
+
     if (read_from_stdin) {
         free(input);
     }
+
     return result;
 }
