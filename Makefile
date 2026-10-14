@@ -19,4 +19,4 @@ test: $(TARGET)
 	sh tests/test.sh ./$(TARGET)
 
 clean:
-	rm -f myshell
+	rm -f $(TARGET) myshell_dbg

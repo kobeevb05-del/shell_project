@@ -1,20 +1,22 @@
+/* Лексер: слова с кавычками, операторы и позиции в исходном вводе. */
 #include "lexer.h"
+#include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
+
+enum { INITIAL_CAPACITY = 16 };
 
 typedef struct {
-    char *data; /*указатель на начало массива*/
-    size_t length; /*сколько записали */
-    size_t capacity; /*сколько выделено памяти */
+    char *data;
+    size_t length;
+    size_t capacity;
 } string_builder_t;
 
 static bool builder_append(string_builder_t *builder, char value) {
-    if (builder->length + 1 >= builder->capacity) {
-        size_t capacity = builder->capacity == 0 ? 16 : builder->capacity * 2;
+    if (builder->length == builder->capacity) {
+        if (builder->capacity > SIZE_MAX / 2) return false;
+        size_t capacity = builder->capacity ? builder->capacity * 2 : INITIAL_CAPACITY;
         char *data = realloc(builder->data, capacity);
-        if (data == NULL) {
-            return false;
-        }
+        if (data == NULL) return false;
         builder->data = data;
         builder->capacity = capacity;
     }
@@ -22,30 +24,17 @@ static bool builder_append(string_builder_t *builder, char value) {
     return true;
 }
 
-static char *builder_finish(string_builder_t *builder) {
-    if (!builder_append(builder, '\0')) {
-        free(builder->data);
-        builder->data = NULL;
-        return NULL;
-    }
-    return builder->data;
-}
-
-static bool add_token(token_list_t *list, token_type_t type, char *lexeme, size_t position) {
+static bool add_token(token_list_t *list, token_type_t type,
+                      char *lexeme, size_t position) {
     if (list->count == list->capacity) {
-        size_t capacity = list->capacity == 0 ? 16 : list->capacity * 2;
+        if (list->capacity > SIZE_MAX / sizeof(token_t) / 2) return false;
+        size_t capacity = list->capacity ? list->capacity * 2 : INITIAL_CAPACITY;
         token_t *tokens = realloc(list->tokens, capacity * sizeof(*tokens));
-        if (tokens == NULL) {
-            return false;
-        }
+        if (tokens == NULL) return false;
         list->tokens = tokens;
         list->capacity = capacity;
     }
-    list->tokens[list->count++] = (token_t){
-        .type = type,
-        .lexeme = lexeme,
-        .position = position,
-    };
+    list->tokens[list->count++] = (token_t){type, lexeme, position};
     return true;
 }
 
@@ -54,21 +43,13 @@ void token_list_init(token_list_t *list) {
 }
 
 void token_list_free(token_list_t *list) {
-    for (size_t i = 0; i < list->count; ++i) {
-        free(list->tokens[i].lexeme);
-    }
+    for (size_t i = 0; i < list->count; ++i) free(list->tokens[i].lexeme);
     free(list->tokens);
-    *list = (token_list_t){0};
+    token_list_init(list);
 }
 
-static bool fail(token_list_t *list, lexer_error_t *error, size_t position,
-                 const char *message) {
-    token_list_free(list);
-    if (error != NULL) {
-        error->position = position;
-        error->message = message;
-    }
-    return false;
+static void set_error(lexer_error_t *error, size_t position, const char *message) {
+    if (error != NULL) *error = (lexer_error_t){position, message};
 }
 
 static bool is_operator(char c) {
@@ -77,285 +58,154 @@ static bool is_operator(char c) {
 }
 
 static token_type_t operator_type(char c, char next, size_t *width) {
-    *width = 1;
+    *width = c == next && (c == '|' || c == '&' || c == '>') ? 2 : 1;
     switch (c) {
-    case '|':
-        if (next == '|') {
-            *width = 2;
-            return TOKEN_OR;
-        }
-        return TOKEN_PIPE;
-    case '&':
-        if (next == '&') {
-            *width = 2;
-            return TOKEN_AND;
-        }
-        return TOKEN_BG;
+    case '|': return *width == 2 ? TOKEN_OR : TOKEN_PIPE;
+    case '&': return *width == 2 ? TOKEN_AND : TOKEN_BG;
+    case '>': return *width == 2 ? TOKEN_REDIR_APP : TOKEN_REDIR_OUT;
     case ';': return TOKEN_SEQ;
     case '(': return TOKEN_LPAREN;
     case ')': return TOKEN_RPAREN;
     case '<': return TOKEN_REDIR_IN;
-    case '>':
-        if (next == '>') {
-            *width = 2;
-            return TOKEN_REDIR_APP;
-        }
-        return TOKEN_REDIR_OUT;
     default: return TOKEN_EOF;
     }
 }
 
-bool lexer_tokenize(const char *input, token_list_t *list,
-                    lexer_error_t *error) {
-    token_list_init(list);
-
-    if (error != NULL) {
-        *error = (lexer_error_t){0};
-    }
-
-    size_t i = 0;
+/* Вызывается в начале слова. quote: '\0' — без кавычек, иначе '\'' или '"'. */
+static char *read_word(const char *input, size_t *index, lexer_error_t *error) {
+    string_builder_t builder = {0};
+    size_t start = *index, i = start, quote_position = start;
+    size_t error_position = start;
+    char quote = '\0';
+    const char *message = "out of memory";
 
     while (input[i] != '\0') {
-        /* Продолжение строки между токенами. */
+        char c = input[i];
+        if (quote == '\0') {
+            if (c == ' ' || c == '\t' || c == '\n' || is_operator(c)) break;
+            if (c == '\'' || c == '"') {
+                quote = c;
+                quote_position = i++;
+                continue;
+            }
+        } else if (c == quote) {
+            quote = '\0';
+            ++i;
+            continue;
+        }
+
+        if (c == '\\' && quote != '\'') {
+            char next = input[i + 1];
+            if (next == '\n') {
+                i += 2;
+                continue;
+            }
+            if (quote == '\0' && next == '\0') {
+                error_position = i;
+                message = "backslash at end of input";
+                goto error;
+            }
+            if (quote == '\0' || next == '"' || next == '\\') {
+                if (!builder_append(&builder, next)) goto memory_error;
+                i += 2;
+                continue;
+            }
+        }
+        if (!builder_append(&builder, c)) goto memory_error;
+        ++i;
+    }
+
+    if (quote != '\0') {
+        error_position = quote_position;
+        message = quote == '\'' ? "unterminated single quote" : "unterminated double quote";
+        goto error;
+    }
+    error_position = start;
+    /* Даже пустые кавычки дают строку с завершающим нулём. */
+    if (!builder_append(&builder, '\0')) goto error;
+    *index = i;
+    return builder.data;
+
+memory_error:
+    error_position = quote != '\0' ? quote_position : i;
+error:
+    free(builder.data);
+    set_error(error, error_position + 1, message);
+    return NULL;
+}
+
+bool lexer_tokenize(const char *input, token_list_t *list, lexer_error_t *error) {
+    token_list_init(list);
+    set_error(error, 0, NULL);
+    size_t i = 0, position = 0;
+    char *lexeme = NULL;
+
+    while (input[i] != '\0') {
         if (input[i] == '\\' && input[i + 1] == '\n') {
             i += 2;
             continue;
         }
-
         if (input[i] == ' ' || input[i] == '\t') {
             ++i;
             continue;
         }
-
-        /* Сохраняем границу строки отдельным токеном. */
-        if (input[i] == '\n') {
-            if (!add_token(list, TOKEN_NEWLINE, NULL, i + 1)) {
-                return fail(list, error, i + 1, "out of memory");
-            }
-
-            ++i;
-            continue;
-        }
-
-        /* Здесь мы находимся на границе токенов. (комментарии) */
+        /* Здесь # находится в начале слова; внутри read_word() он обычный. */
         if (input[i] == '#') {
-            while (input[i] != '\0' && input[i] != '\n') {
-                ++i;
-            }
+            while (input[i] != '\0' && input[i] != '\n') ++i;
             continue;
         }
 
-        if (is_operator(input[i])) {
-            size_t position = i;
-            size_t next = i + 1;
-
-            /*
-             * Продолжение строки может находиться между
-             * двумя символами одного оператора.
-             */
-            while (input[next] == '\\' && input[next + 1] == '\n') {
-                next += 2;
-            }
-
-            size_t width;
-            token_type_t type =
-                operator_type(input[i], input[next], &width);
-
-            char *lexeme = malloc(width + 1);
-            if (lexeme == NULL) {
-                return fail(list, error, position + 1,
-                            "out of memory");
-            }
-
+        position = i;
+        token_type_t type;
+        if (input[i] == '\n') {
+            type = TOKEN_NEWLINE;
+            ++i;
+        } else if (is_operator(input[i])) {
+            size_t next = i + 1, width;
+            /* Учитываем продолжения строки между символами одного оператора. */
+            while (input[next] == '\\' && input[next + 1] == '\n') next += 2;
+            type = operator_type(input[i], input[next], &width);
+            lexeme = malloc(width + 1);
+            if (lexeme == NULL) goto memory_error;
             lexeme[0] = input[i];
-
-            if (width == 2) {
-                lexeme[1] = input[next];
-            }
-
+            if (width == 2) lexeme[1] = input[next];
             lexeme[width] = '\0';
-
-            if (!add_token(list, type, lexeme, position + 1)) {
-                free(lexeme);
-                return fail(list, error, position + 1,
-                            "out of memory");
-            }
-
-            if (width == 2) {
-                i = next + 1;
-            } else {
-                ++i;
-            }
-
-            continue;
-        }
-
-        size_t start = i;
-        bool started = false;
-        string_builder_t builder = {0};
-
-        while (input[i] != '\0' &&
-               input[i] != ' ' &&
-               input[i] != '\t' &&
-               input[i] != '\n' &&
-               !is_operator(input[i])) {
-            char c = input[i];
-
-            if (c == '\'') {
-                size_t quote_position = i;
-                ++i;
-                started = true;
-
-                /* В одинарных кавычках всё сохраняется буквально. */
-                while (input[i] != '\0' && input[i] != '\'') {
-                    if (!builder_append(&builder, input[i])) {
-                        free(builder.data);
-                        return fail(list, error, quote_position + 1,
-                                    "out of memory");
-                    }
-                    ++i;
-                }
-
-                if (input[i] == '\0') {
-                    free(builder.data);
-                    return fail(list, error, quote_position + 1,
-                                "unterminated single quote");
-                }
-
-                ++i;
-            } else if (c == '"') {
-                size_t quote_position = i;
-                ++i;
-                started = true;
-
-                while (input[i] != '\0' && input[i] != '"') {
-                    if (input[i] == '\\') {
-                        char next = input[i + 1];
-
-                        if (next == '\n') {
-                            i += 2;
-                            continue;
-                        }
-
-                        if (next == '"' || next == '\\') {
-                            c = next;
-                            i += 2;
-                        } else {
-                            /* Перед остальными символами сохраняем \. */
-                            c = input[i];
-                            ++i;
-                        }
-                    } else {
-                        c = input[i];
-                        ++i;
-                    }
-
-                    if (!builder_append(&builder, c)) {
-                        free(builder.data);
-                        return fail(list, error, quote_position + 1,
-                                    "out of memory");
-                    }
-                }
-
-                if (input[i] == '\0') {
-                    free(builder.data);
-                    return fail(list, error, quote_position + 1,
-                                "unterminated double quote");
-                }
-
-                ++i;
-            } else if (c == '\\') {
-                size_t slash_position = i;
-                ++i;
-
-                if (input[i] == '\0') {
-                    free(builder.data);
-                    return fail(list, error, slash_position + 1,
-                                "backslash at end of input");
-                }
-
-                /* Продолжение строки внутри слова. */
-                if (input[i] == '\n') {
-                    ++i;
-                    continue;
-                }
-
-                started = true;
-
-                if (!builder_append(&builder, input[i])) {
-                    free(builder.data);
-                    return fail(list, error, slash_position + 1,
-                                "out of memory");
-                }
-
-                ++i;
-            } else {
-                started = true;
-
-                if (!builder_append(&builder, input[i])) {
-                    free(builder.data);
-                    return fail(list, error, i + 1,
-                                "out of memory");
-                }
-
-                ++i;
-            }
-        }
-
-        if (started) {
-            char *lexeme = builder_finish(&builder);
-
-            if (lexeme == NULL) {
-                return fail(list, error, start + 1,
-                            "out of memory");
-            }
-
-            if (!add_token(list, TOKEN_WORD, lexeme, start + 1)) {
-                free(lexeme);
-                return fail(list, error, start + 1,
-                            "out of memory");
-            }
+            i = width == 2 ? next + 1 : i + 1;
         } else {
-            free(builder.data);
+            type = TOKEN_WORD;
+            lexeme = read_word(input, &i, error);
+            if (lexeme == NULL) goto error;
         }
+        if (!add_token(list, type, lexeme, position + 1)) goto memory_error;
+        lexeme = NULL; /* Строкой теперь владеет список токенов. */
     }
-
-    if (!add_token(list, TOKEN_EOF, NULL, i + 1)) {
-        return fail(list, error, i + 1, "out of memory");
-    }
-
+    position = i;
+    if (!add_token(list, TOKEN_EOF, NULL, i + 1)) goto memory_error;
     return true;
+
+memory_error:
+    set_error(error, position + 1, "out of memory");
+error:
+    free(lexeme);
+    token_list_free(list);
+    return false;
 }
 
 const char *token_type_name(token_type_t type) {
     switch (type) {
-    case TOKEN_WORD:
-        return "WORD";
-    case TOKEN_PIPE:
-        return "PIPE";
-    case TOKEN_AND:
-        return "AND";
-    case TOKEN_OR:
-        return "OR";
-    case TOKEN_BG:
-        return "BACKGROUND";
-    case TOKEN_SEQ:
-        return "SEQUENCE";
-    case TOKEN_REDIR_IN:
-        return "REDIR_IN";
-    case TOKEN_REDIR_OUT:
-        return "REDIR_OUT";
-    case TOKEN_REDIR_APP:
-        return "REDIR_APPEND";
-    case TOKEN_LPAREN:
-        return "LPAREN";
-    case TOKEN_RPAREN:
-        return "RPAREN";
-    case TOKEN_NEWLINE:
-        return "NEWLINE";
-    case TOKEN_EOF:
-        return "EOF";
+    case TOKEN_WORD: return "WORD";
+    case TOKEN_PIPE: return "PIPE";
+    case TOKEN_AND: return "AND";
+    case TOKEN_OR: return "OR";
+    case TOKEN_BG: return "BACKGROUND";
+    case TOKEN_SEQ: return "SEQUENCE";
+    case TOKEN_REDIR_IN: return "REDIR_IN";
+    case TOKEN_REDIR_OUT: return "REDIR_OUT";
+    case TOKEN_REDIR_APP: return "REDIR_APPEND";
+    case TOKEN_LPAREN: return "LPAREN";
+    case TOKEN_RPAREN: return "RPAREN";
+    case TOKEN_NEWLINE: return "NEWLINE";
+    case TOKEN_EOF: return "EOF";
     }
-
     return "UNKNOWN";
 }

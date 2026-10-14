@@ -19,6 +19,10 @@ typedef struct {
 /* Функции для работы со списком токенов */
 void token_list_init(token_list_t *list);
 void token_list_free(token_list_t *list);
+/* При успехе список владеет строками токенов: освободить token_list_free().
+ * Перед повторным вызовом освободить предыдущий результат.
+ * При ошибке список пуст; error может быть NULL.
+ */
 bool lexer_tokenize(const char *input, token_list_t *list, lexer_error_t *error);
 const char *token_type_name(token_type_t type);
 
