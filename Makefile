@@ -1,8 +1,8 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c23 -D_POSIX_C_SOURCE=200809L
 TARGET = myshell
-SOURCES = src/main.c src/lexer.c
-HEADERS = src/token.h src/lexer.h
+SOURCES = src/main.c src/lexer.c src/ast.c src/parser.c
+HEADERS = src/token.h src/lexer.h src/ast.h src/parser.h
 
 .PHONY: all debug clean test
 
