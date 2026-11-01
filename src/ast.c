@@ -2,6 +2,22 @@
 
 #include <stdlib.h>
 
+ast_node_t *ast_node_new_simple(ast_simple_t *command)
+{
+    if (command == NULL) {
+        return NULL;
+    }
+
+    ast_node_t *node = malloc(sizeof(*node));
+    if (node == NULL) {
+        return NULL;
+    }
+
+    node->type = AST_SIMPLE;
+    node->data.simple = command;
+    return node;
+}
+
 void ast_simple_free(ast_simple_t *command)
 {
     if (command == NULL) {
