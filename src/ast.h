@@ -1,27 +1,42 @@
 #ifndef AST_H
 #define AST_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 
 typedef enum {
-    AST_SIMPLE, // простые команды
-    AST_PIPE,   // конвейер ls|wc
-    AST_AND,    // условие cmd1 && cmd2
-    AST_OR,     // условие cmd2 || cmd2
-    AST_SEQUENCE, // последовательность cmd1 ; cmd2
-    AST_BACKGROUND, // фоновое выполнение cmd &
-    AST_SUBSHELL // подоболочка (cmd1 ; cmd2 )
+    AST_SIMPLE,
+    AST_PIPE,
+    AST_AND,
+    AST_OR,
+    AST_SEQUENCE,
+    AST_BACKGROUND,
+    AST_SUBSHELL
 } ast_type_t;
+
+typedef enum {
+    AST_REDIR_IN,
+    AST_REDIR_OUT,
+    AST_REDIR_APPEND
+} ast_redir_type_t;
+
+typedef struct {
+    ast_redir_type_t type;
+    char *path;
+} ast_redirection_t;
 
 typedef struct {
     char **argv;
     size_t argc;
 } ast_simple_t;
 
-// type определяет используемый вариант data; узел владеет его содержимым
+/* Узел владеет командой или потомками, а также путями перенаправлений. */
 typedef struct ast_node {
     ast_type_t type;
+    /* Для SIMPLE и SUBSHELL, в порядке следования во вводе. */
+    ast_redirection_t *redirections;
+    size_t redirection_count;
     union {
         ast_simple_t *simple;
         struct {
@@ -32,17 +47,19 @@ typedef struct ast_node {
     } data;
 } ast_node_t;
 
-/*
- * Оборачивает динамически выделенную команду в узел AST_SIMPLE.
- * При успехе узел принимает владение командой.
- * При ошибке возвращает NULL и не освобождает команду.
- */
+/* Конструкторы принимают владение аргументами только при успехе. */
 ast_node_t *ast_node_new_simple(ast_simple_t *command);
+ast_node_t *ast_node_new_binary(ast_type_t type, ast_node_t *left, ast_node_t *right);
+ast_node_t *ast_node_new_unary(ast_type_t type, ast_node_t *child);
 
-/* Освобождает аргументы и саму структуру команды. */
+/* Копирует путь. При ошибке возвращает false и оставляет узел прежним. */
+bool ast_node_add_redirection(ast_node_t *node, ast_redir_type_t type, const char *path);
+
 void ast_simple_free(ast_simple_t *command);
+void ast_node_free(ast_node_t *node);
 
-/* Печатает представление команды в указанный поток. */
+void ast_print_quoted(FILE *output, const char *text);
 void ast_simple_print(FILE *output, const ast_simple_t *command);
+void ast_node_print(FILE *output, const ast_node_t *node);
 
 #endif

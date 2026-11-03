@@ -8,7 +8,7 @@ trap 'rm -f "$tmp" "$tmp.actual"' 0
 trap 'exit 1' HUP INT TERM
 
 check_tokens() {
-    "$program" -c "$1" >"$tmp"
+    "$program" --dump-tokens -c "$1" >"$tmp"
     # Убираем только выравнивание столбцов, сохраняя пробелы внутри слов.
     sed -E 's/^([0-9]+: [A-Z_]+) +/\1 /; s/ +$//' "$tmp" >"$tmp.actual"
     diff -u - "$tmp.actual"
@@ -16,7 +16,7 @@ check_tokens() {
 
 check_error() {
     status=0
-    "$program" -c "$1" >"$tmp" 2>&1 || status=$?
+    "$program" --dump-tokens -c "$1" >"$tmp" 2>&1 || status=$?
     if [ "$status" -ne 2 ]; then
         printf 'Expected exit code 2, got %s for: %s\n' "$status" "$1" >&2
         return 1
@@ -95,6 +95,13 @@ check_tokens '| & ; && || ( ) < > >>' <<'TOKENS'
 19: REDIR_OUT ">"
 21: REDIR_APPEND ">>"
 23: EOF
+TOKENS
+
+# Отладка лексера работает даже для синтаксически незавершённой строки.
+check_tokens 'echo |' <<'TOKENS'
+1: WORD "echo"
+6: PIPE "|"
+7: EOF
 TOKENS
 
 # empty line
@@ -185,3 +192,4 @@ check_error 'echo "x' 'byte 6: unterminated double quote'
 check_error 'echo \' 'byte 6: backslash at end of input'
 
 echo 'lexer tests passed'
+sh "$(dirname "$0")/test_ast.sh" "$program"

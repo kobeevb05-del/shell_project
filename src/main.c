@@ -1,4 +1,5 @@
-#include "lexer.h"
+/* Чтение ввода, выбор режима и передача результата между фазами разбора. */
+#include "parser.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -94,36 +95,6 @@ static char *read_all(FILE *stream) {
     return buffer;
 }
 
-static void print_quoted(const char *text) {
-    putchar('"');
-
-    for (const unsigned char *cursor = (const unsigned char *)text;
-         *cursor != '\0'; ++cursor) {
-        switch (*cursor) {
-        case '\\':
-            fputs("\\\\", stdout);
-            break;
-        case '"':
-            fputs("\\\"", stdout);
-            break;
-        case '\n':
-            fputs("\\n", stdout);
-            break;
-        case '\t':
-            fputs("\\t", stdout);
-            break;
-        case '\r':
-            fputs("\\r", stdout);
-            break;
-        default:
-            putchar(*cursor);
-            break;
-        }
-    }
-
-    putchar('"');
-}
-
 static void print_tokens(const token_list_t *tokens) {
     for (size_t i = 0; i < tokens->count; ++i) {
         const token_t *token = &tokens->tokens[i];
@@ -134,28 +105,48 @@ static void print_tokens(const token_list_t *tokens) {
 
         if (token->lexeme != NULL) {
             putchar(' ');
-            print_quoted(token->lexeme);
+            ast_print_quoted(stdout, token->lexeme);
         }
 
         putchar('\n');
     }
 }
 
-static int process_input(const char *input) {
-    token_list_t tokens;
-    lexer_error_t error;
+typedef enum { MODE_NORMAL, MODE_TOKENS, MODE_AST } input_mode_t;
 
-    if (!lexer_tokenize(input, &tokens, &error)) {
+static int process_input(const char *input, input_mode_t mode) {
+    token_list_t tokens;
+    lexer_error_t lex_error;
+
+    if (!lexer_tokenize(input, &tokens, &lex_error)) {
         fprintf(stderr, "mysh: lexer: byte %zu: %s\n",
-                error.position, error.message);
+                lex_error.position, lex_error.message);
         return 2;
     }
 
-    print_tokens(&tokens);
+    if (mode == MODE_TOKENS) {
+        print_tokens(&tokens);
+    } else {
+        ast_node_t *root;
+        parser_error_t parse_error;
+        if (!parser_parse(&tokens, &root, &parse_error)) {
+            fprintf(stderr, "mysh: parser: byte %zu: %s\n",
+                    parse_error.position, parse_error.message);
+            token_list_free(&tokens);
+            return 2;
+        }
+        if (mode == MODE_AST) {
+            ast_node_print(stdout, root);
+        } else {
+            /* До подключения исполнителя обычный запуск показывает токены. */
+            print_tokens(&tokens);
+        }
+        ast_node_free(root);
+    }
     token_list_free(&tokens);
 
     if (ferror(stdout) || fflush(stdout) == EOF) {
-        fputs("mysh: output: failed to write tokens\n", stderr);
+        fputs("mysh: output: write failed\n", stderr);
         return 1;
     }
 
@@ -164,19 +155,23 @@ static int process_input(const char *input) {
 
 int main(int argc, char **argv) {
     char *input = NULL;
-    bool read_from_stdin = true;
-
-    if (argc == 3 && strcmp(argv[1], "-c") == 0) {
-        input = argv[2];
-        read_from_stdin = false;
-    } else if (argc == 1) {
-    } else if (argc == 2 &&
-               strcmp(argv[1], "--dump-tokens") == 0) {
-    } else {
-        fprintf(stderr,
-                "usage: %s [--dump-tokens | -c command]\n",
-                argv[0]);
-        return 2;
+    input_mode_t mode = MODE_NORMAL;
+    int arg = 1;
+    if (arg < argc && strcmp(argv[arg], "--dump-tokens") == 0) {
+        mode = MODE_TOKENS;
+        ++arg;
+    } else if (arg < argc && strcmp(argv[arg], "--dump-ast") == 0) {
+        mode = MODE_AST;
+        ++arg;
+    }
+    bool read_from_stdin = arg == argc;
+    if (!read_from_stdin) {
+        if (argc - arg != 2 || strcmp(argv[arg], "-c") != 0) {
+            fprintf(stderr, "usage: %s [--dump-tokens | --dump-ast] [-c command]\n",
+                    argv[0]);
+            return 2;
+        }
+        input = argv[arg + 1];
     }
 
     if (read_from_stdin && argc == 1 && isatty(STDIN_FILENO)) {
@@ -208,7 +203,7 @@ int main(int argc, char **argv) {
                 break;
             }
 
-            last_status = process_input(line);
+            last_status = process_input(line, mode);
         }
 
         free(line);
@@ -224,7 +219,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    int result = process_input(input);
+    int result = process_input(input, mode);
 
     if (read_from_stdin) {
         free(input);

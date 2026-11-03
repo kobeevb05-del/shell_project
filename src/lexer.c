@@ -1,5 +1,6 @@
 /* Лексер: слова с кавычками, операторы и позиции в исходном вводе. */
 #include "lexer.h"
+#include <ctype.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -71,12 +72,27 @@ static token_type_t operator_type(char c, char next, size_t *width) {
     }
 }
 
+/* Без пробела перед < или > это номер дескриптора или форма {имя}>. */
+static bool is_fd_prefix(const char *word) {
+    const unsigned char *p = (const unsigned char *)word;
+    if (isdigit(*p)) {
+        while (isdigit(*p)) ++p;
+        return *p == '\0';
+    }
+    if (*p != '{') return false;
+    ++p;
+    if (!isalpha(*p) && *p != '_') return false;
+    while (isalnum(*p) || *p == '_') ++p;
+    return *p == '}' && p[1] == '\0';
+}
+
 /* Вызывается в начале слова. quote: '\0' — без кавычек, иначе '\'' или '"'. */
 static char *read_word(const char *input, size_t *index, lexer_error_t *error) {
     string_builder_t builder = {0};
     size_t start = *index, i = start, quote_position = start;
     size_t error_position = start;
     char quote = '\0';
+    bool quoted = false;
     const char *message = "out of memory";
 
     while (input[i] != '\0') {
@@ -84,6 +100,7 @@ static char *read_word(const char *input, size_t *index, lexer_error_t *error) {
         if (quote == '\0') {
             if (c == ' ' || c == '\t' || c == '\n' || is_operator(c)) break;
             if (c == '\'' || c == '"') {
+                quoted = true;
                 quote = c;
                 quote_position = i++;
                 continue;
@@ -106,6 +123,7 @@ static char *read_word(const char *input, size_t *index, lexer_error_t *error) {
                 goto error;
             }
             if (quote == '\0' || next == '"' || next == '\\') {
+                quoted = true;
                 if (!builder_append(&builder, next)) goto memory_error;
                 i += 2;
                 continue;
@@ -123,6 +141,10 @@ static char *read_word(const char *input, size_t *index, lexer_error_t *error) {
     error_position = start;
     /* Даже пустые кавычки дают строку с завершающим нулём. */
     if (!builder_append(&builder, '\0')) goto error;
+    if (!quoted && (input[i] == '<' || input[i] == '>') && is_fd_prefix(builder.data)) {
+        message = "explicit file descriptor redirection is not supported";
+        goto error;
+    }
     *index = i;
     return builder.data;
 
@@ -164,6 +186,10 @@ bool lexer_tokenize(const char *input, token_list_t *list, lexer_error_t *error)
             size_t next = i + 1, width;
             /* Учитываем продолжения строки между символами одного оператора. */
             while (input[next] == '\\' && input[next + 1] == '\n') next += 2;
+            if (input[i] == '&' && input[next] == '>') {
+                set_error(error, i + 1, "combined output redirection is not supported");
+                goto error;
+            }
             type = operator_type(input[i], input[next], &width);
             lexeme = malloc(width + 1);
             if (lexeme == NULL) goto memory_error;
