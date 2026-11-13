@@ -6,13 +6,20 @@
 #include <stdio.h>
 
 typedef enum {
-    AST_SIMPLE,
-    AST_PIPE,
-    AST_AND,
-    AST_OR,
-    AST_SEQUENCE,
-    AST_BACKGROUND,
-    AST_SUBSHELL
+    AST_SIMPLE,     // простая команда: имя, аргументы и перенаправления
+                    // echo hi > out
+    AST_PIPE,       // Конвейер: соединяет левую и правую команды через |
+                    // echo hi | cat
+    AST_AND,        // &&: правую часть выполняют при успехе левой
+                    // mkdir dir && cd dir
+    AST_OR,         // ||: правую часть выполняют при ошибке левой
+                    // cat file || echo error
+    AST_SEQUENCE,   // последовательность команд: одна после другой
+                    // echo one; echo two
+    AST_BACKGROUND, // конструкция с &: дочернее поддерево предназначено для фонового выполнения
+                    // sleep 10 &
+    AST_SUBSHELL    // круппа в круглых скобках, предназначенная для подоболочки
+                    // (echo one; echo two)
 } ast_type_t;
 
 typedef enum {
@@ -31,10 +38,9 @@ typedef struct {
     size_t argc;
 } ast_simple_t;
 
-/* Узел владеет командой или потомками, а также путями перенаправлений. */
+//узел владеет командой или потомками, а также путями перенаправлений
 typedef struct ast_node {
     ast_type_t type;
-    /* Для SIMPLE и SUBSHELL, в порядке следования во вводе. */
     ast_redirection_t *redirections;
     size_t redirection_count;
     union {
@@ -47,12 +53,12 @@ typedef struct ast_node {
     } data;
 } ast_node_t;
 
-/* Конструкторы принимают владение аргументами только при успехе. */
+//конструкторы принимают владение аргументами только при успехе
 ast_node_t *ast_node_new_simple(ast_simple_t *command);
 ast_node_t *ast_node_new_binary(ast_type_t type, ast_node_t *left, ast_node_t *right);
 ast_node_t *ast_node_new_unary(ast_type_t type, ast_node_t *child);
 
-/* Копирует путь. При ошибке возвращает false и оставляет узел прежним. */
+//копирует путь. При ошибке возвращает false и оставляет узел прежним
 bool ast_node_add_redirection(ast_node_t *node, ast_redir_type_t type, const char *path);
 
 void ast_simple_free(ast_simple_t *command);

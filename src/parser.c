@@ -226,11 +226,11 @@ static ast_node_t *parse_command(parser_t *parser)
 }
 static ast_node_t *parse_pipeline(parser_t *parser)
 {
-    ast_node_t *left = parse_command(parser);
+ ast_node_t *left = parse_command(parser);
 
     while (left != NULL && parser_match(parser, TOKEN_PIPE)) {
-        ast_node_t *right = parse_command(parser);
-        left = join_nodes(parser, AST_PIPE, left, right);
+       ast_node_t *right = parse_command(parser);
+        left = join_nodes(parser, AST_PIPE, left, right); 
     }
 
     return left;

@@ -1,6 +1,6 @@
 /* Чтение ввода, выбор режима и передача результата между фазами разбора. */
 #include "parser.h"
-
+#include "executor.h"
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -117,6 +117,7 @@ typedef enum { MODE_NORMAL, MODE_TOKENS, MODE_AST } input_mode_t;
 static int process_input(const char *input, input_mode_t mode) {
     token_list_t tokens;
     lexer_error_t lex_error;
+    int command_status = 0;
 
     if (!lexer_tokenize(input, &tokens, &lex_error)) {
         fprintf(stderr, "mysh: lexer: byte %zu: %s\n",
@@ -127,7 +128,7 @@ static int process_input(const char *input, input_mode_t mode) {
     if (mode == MODE_TOKENS) {
         print_tokens(&tokens);
     } else {
-        ast_node_t *root;
+         ast_node_t *root;
         parser_error_t parse_error;
         if (!parser_parse(&tokens, &root, &parse_error)) {
             fprintf(stderr, "mysh: parser: byte %zu: %s\n",
@@ -138,8 +139,7 @@ static int process_input(const char *input, input_mode_t mode) {
         if (mode == MODE_AST) {
             ast_node_print(stdout, root);
         } else {
-            /* До подключения исполнителя обычный запуск показывает токены. */
-            print_tokens(&tokens);
+            command_status = executor_run(root);
         }
         ast_node_free(root);
     }
@@ -149,8 +149,7 @@ static int process_input(const char *input, input_mode_t mode) {
         fputs("mysh: output: write failed\n", stderr);
         return 1;
     }
-
-    return 0;
+    return command_status;
 }
 
 int main(int argc, char **argv) {

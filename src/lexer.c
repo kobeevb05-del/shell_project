@@ -44,9 +44,11 @@ void token_list_init(token_list_t *list) {
 }
 
 void token_list_free(token_list_t *list) {
-    for (size_t i = 0; i < list->count; ++i) free(list->tokens[i].lexeme);
-    free(list->tokens);
-    token_list_init(list);
+    for (size_t i = 0; i < list->count; ++i) {
+        free(list->tokens[i].lexeme);
+    }
+        free(list->tokens);
+        token_list_init(list);
 }
 
 static void set_error(lexer_error_t *error, size_t position, const char *message) {
@@ -139,7 +141,6 @@ static char *read_word(const char *input, size_t *index, lexer_error_t *error) {
         goto error;
     }
     error_position = start;
-    /* Даже пустые кавычки дают строку с завершающим нулём. */
     if (!builder_append(&builder, '\0')) goto error;
     if (!quoted && (input[i] == '<' || input[i] == '>') && is_fd_prefix(builder.data)) {
         message = "explicit file descriptor redirection is not supported";
