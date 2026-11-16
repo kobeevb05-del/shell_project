@@ -152,9 +152,9 @@ check_error lexer 8 --dump-ast -c 'echo a 2>f'
 check_error lexer 8 --dump-ast -c 'echo x &>f next'
 check_error lexer 1 --dump-ast -c '{fd}>f cmd'
 
-# До появления исполнителя обычный -c печатает токены только после проверки грамматики.
-"$program" --dump-tokens -c 'echo hi' >"$tmpdir/expected"
-"$program" -c 'echo hi' >"$tmpdir/actual"
+# Обычный -c выполняет внешнюю команду и печатает её вывод.
+printf 'hi\n' >"$tmpdir/expected"
+"$program" -c '/bin/echo hi' >"$tmpdir/actual"
 diff -u "$tmpdir/expected" "$tmpdir/actual"
 check_error parser 7 -c 'echo |'
 
