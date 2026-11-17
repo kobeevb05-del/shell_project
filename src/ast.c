@@ -1,6 +1,4 @@
-/* Дерево команд: создание узлов, печать и освобождение их содержимого. */
 #include "ast.h"
-
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>

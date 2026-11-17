@@ -1,6 +1,4 @@
-/* Синтаксический анализ и построение AST. */
 #include "parser.h"
-
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,8 +15,8 @@ typedef struct {
 static ast_node_t *parse_list(parser_t *parser);
 static void parser_set_error(parser_t *parser, const char *message);
 
-static bool append_argument(ast_simple_t *command, const char *word)
-{
+static bool append_argument(ast_simple_t *command, const char *word){
+    
     if (command->argc > SIZE_MAX / sizeof(*command->argv) - 2) {
         return false;
     }
@@ -178,8 +176,7 @@ static bool parser_expect(parser_t *parser, token_type_t expected,
     return false;
 }
 
-static ast_node_t *parse_subshell(parser_t *parser)
-{
+    static ast_node_t *parse_subshell(parser_t *parser){
     if (parser->subshell_depth == MAX_SUBSHELL_DEPTH) {
         parser_set_error(parser, "subshell nesting limit exceeded");
         return NULL;
@@ -224,8 +221,8 @@ static ast_node_t *parse_command(parser_t *parser)
 
     return parse_simple(parser);
 }
-static ast_node_t *parse_pipeline(parser_t *parser)
-{
+static ast_node_t *parse_pipeline(parser_t *parser){
+
  ast_node_t *left = parse_command(parser);
 
     while (left != NULL && parser_match(parser, TOKEN_PIPE)) {

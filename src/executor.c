@@ -1,4 +1,5 @@
 #include "executor.h"
+#include "comm.h"
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -8,31 +9,43 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-/* При успехе не возвращается; при ошибке возвращает -1 и сохраняет errno. */
+/* Ищет команду без '/' в PATH.
+ * При успехе не возвращается; при ошибке возвращает -1 и задаёт errno.
+ */
 static int exec_from_path(const ast_simple_t *command)
 {
-    const char *path = getenv("PATH");
-
-    if (path != NULL && path[0] == '\0') {
-        return execv(command->argv[0], command->argv);
+    if (command->argv[0][0] == '\0') {
+        errno = ENOENT;
+        return -1;
     }
+
+    const char *path = getenv("PATH");
+    if (path == NULL) {
+        /* Выбранные каталоги по умолчанию для нашей Linux-системы. */
+        path = "/bin:/usr/bin";
+    }
+
+    size_t name_length = strlen(command->argv[0]);
+    int search_error = ENOENT;
     const char *directory = path;
+
     while (directory != NULL) {
         const char *separator = strchr(directory, ':');
         size_t directory_length = separator == NULL
             ? strlen(directory)
             : (size_t)(separator - directory);
-        size_t name_length = strlen(command->argv[0]);
 
-        /* Проверяем место для каталога, имени, '/' и '\0'. */
+        /* Проверяем размер до сложения: каталог, имя, '/' и '\0'. */
         if (name_length > SIZE_MAX - 2 ||
             directory_length > SIZE_MAX - name_length - 2) {
             errno = ENAMETOOLONG;
             return -1;
         }
 
+        /* Пустой элемент PATH означает текущий каталог. */
         size_t prefix_length = directory_length == 0
             ? 0 : directory_length + 1;
+
         char *candidate = malloc(prefix_length + name_length + 1);
         if (candidate == NULL) {
             return -1;
@@ -46,8 +59,13 @@ static int exec_from_path(const ast_simple_t *command)
                command->argv[0], name_length + 1);
 
         execv(candidate, command->argv);
+
         int exec_error = errno;
         free(candidate);
+
+        if (exec_error == EACCES) {
+            search_error = EACCES;
+        }
 
         if (exec_error != ENOENT &&
             exec_error != ENOTDIR &&
@@ -58,7 +76,9 @@ static int exec_from_path(const ast_simple_t *command)
 
         directory = separator == NULL ? NULL : separator + 1;
     }
-    return execvp(command->argv[0], command->argv);
+
+    errno = search_error;
+    return -1;
 }
 
 int executor_run(const ast_node_t *node)
@@ -76,16 +96,20 @@ int executor_run(const ast_node_t *node)
     }
     const ast_simple_t *command = node->data.simple;
 
-pid_t pid = fork();
-if (pid == -1){
+        if (strcmp(command->argv[0], "cd") == 0) {
+        return comm_cd(command);
+    }
+
+    pid_t pid = fork();
+    if (pid == -1){
     fprintf(stderr, "mysh: %s: fork: %s\n", command->argv[0], strerror(errno));
     return 1;
 }
 
-if (pid == 0) {
+    if (pid == 0) {
     if (strchr(command->argv[0], '/') != NULL) {
     execv(command->argv[0], command->argv);
-} else {
+    } else {
     exec_from_path(command);
 }
 
@@ -99,7 +123,7 @@ if (pid == 0) {
 
 int wait_status;
 
-while (waitpid(pid, &wait_status, 0) == -1){
+    while (waitpid(pid, &wait_status, 0) == -1){
     if (errno == EINTR){
         continue;
     }
@@ -107,15 +131,15 @@ while (waitpid(pid, &wait_status, 0) == -1){
     return 1;
 }
 
-if (WIFEXITED(wait_status)) {
-    return WEXITSTATUS(wait_status);
+    if (WIFEXITED(wait_status)) {
+        return WEXITSTATUS(wait_status);
 }
 
-if (WIFSIGNALED(wait_status)){
-    return 128 + WTERMSIG(wait_status);
+    if (WIFSIGNALED(wait_status)){
+        return 128 + WTERMSIG(wait_status);
 }
 
-fputs("mysh: executor: child did not exit nirmally\n", stderr);
+     fputs("mysh: executor: child did not exit nirmally\n", stderr);
 return 1;
 }
 
