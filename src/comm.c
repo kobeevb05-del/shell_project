@@ -1,4 +1,5 @@
 #include "comm.h"
+#include <stdint.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,4 +41,86 @@ int comm_cd(const ast_simple_t *command)
     }
 
     return 0;
+}
+
+int comm_pwd(const ast_simple_t *command)
+{
+    if (command->argc != 1) {
+        fputs("mysh: pwd: arguments are not supported\n", stderr);
+        return 2;
+    }
+
+    size_t capacity = 256; /* Начальный размер, не предел длины пути. */
+    char *path = NULL;
+
+    for (;;) {
+        char *new_path = realloc(path, capacity);
+        if (new_path == NULL) {
+            goto failure;
+        }
+        path = new_path;
+
+        char *result;
+        do {
+            result = getcwd(path, capacity);
+        } while (result == NULL && errno == EINTR);
+
+        if (result != NULL) {
+            break;
+        }
+
+        if (errno != ERANGE) {
+            goto failure;
+        }
+
+        if (capacity > SIZE_MAX / 2) {
+            errno = ENOMEM;
+            goto failure;
+        }
+
+        capacity *= 2;
+    }
+
+    if (dprintf(STDOUT_FILENO, "%s\n", path) < 0) {
+        goto failure;
+    }
+
+    free(path);
+    return 0;
+
+failure:
+    {
+        int saved_errno = errno;
+        free(path);
+        fprintf(stderr, "mysh: pwd: %s\n", strerror(saved_errno));
+        return 1;
+    }
+}
+
+int comm_echo(const ast_simple_t *command)
+{
+    size_t first = 1;
+    bool print_newline = true;
+
+    while (first < command->argc &&
+           strcmp(command->argv[first], "-n") == 0) {
+        print_newline = false;
+        ++first;
+    }
+
+    for (size_t i = first; i < command->argc; ++i) {
+        const char *separator = i == first ? "" : " ";
+        if (dprintf(STDOUT_FILENO, "%s%s", separator, command->argv[i]) < 0) {
+            goto write_error;
+        }
+    }
+
+    if (print_newline && dprintf(STDOUT_FILENO, "\n") < 0) {
+        goto write_error;
+    }
+    return 0;
+
+write_error:
+    perror("mysh: echo");
+    return 1;
 }

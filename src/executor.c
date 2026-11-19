@@ -10,8 +10,7 @@
 #include <stdlib.h>
 
 /* Ищет команду без '/' в PATH.
- * При успехе не возвращается; при ошибке возвращает -1 и задаёт errno.
- */
+ * При успехе не возвращается; при ошибке возвращает -1 и задаёт errno*/
 static int exec_from_path(const ast_simple_t *command)
 {
     if (command->argv[0][0] == '\0') {
@@ -21,7 +20,6 @@ static int exec_from_path(const ast_simple_t *command)
 
     const char *path = getenv("PATH");
     if (path == NULL) {
-        /* Выбранные каталоги по умолчанию для нашей Linux-системы. */
         path = "/bin:/usr/bin";
     }
 
@@ -96,9 +94,20 @@ int executor_run(const ast_node_t *node)
     }
     const ast_simple_t *command = node->data.simple;
 
+
         if (strcmp(command->argv[0], "cd") == 0) {
         return comm_cd(command);
     }
+
+    if (strcmp(command->argv[0], "pwd") == 0) {
+        return comm_pwd(command);
+    }
+
+        if (strcmp(command->argv[0], "echo") == 0) {
+        return comm_echo(command);
+    }
+
+
 
     pid_t pid = fork();
     if (pid == -1){
