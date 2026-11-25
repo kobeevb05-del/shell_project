@@ -114,23 +114,6 @@ static int print_errno(const char *name)
     return 1;
 }
 
-/* Подбирает завершившиеся фоновые процессы, чтобы не оставались зомби. */
-static void reap_background(int sig)
-{
-    (void)sig;
-    int saved_errno = errno;
-    for (;;) {
-        pid_t pid = waitpid(-1, NULL, WNOHANG);
-        if (pid > 0) {
-            continue;
-        }
-        if (pid == -1 && errno == EINTR) {
-            continue;
-        }
-        break;
-    }
-    errno = saved_errno;
-}
 static int dup2_retry(int source, int target)
 {
     int result;
@@ -235,4 +218,44 @@ static void run_child_stage(const ast_node_t *node)
     int code = errno == ENOENT ? 127 : 126;
     print_errno(command->argv[0]);
     _exit(code);
+}
+
+int executor_run(const ast_node_t *node)
+{
+    if (node == NULL) {
+        return 0;
+    }
+    if (node->type != AST_SIMPLE) {
+        fputs("mysh: executor: unsupported command syntax\n", stderr);
+        return 2;
+    }
+
+    builtin_fn fn = find_builtin(node->data.simple->argv[0]);
+    if (fn != NULL) {
+        return run_builtin_in_parent(node, fn);
+    }
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        return print_errno("fork");
+    }
+    if (pid == 0) {
+        run_child_stage(node);
+    }
+
+    int status;
+    while (waitpid(pid, &status, 0) == -1) {
+        if (errno == EINTR) {
+            continue;
+        }
+        return print_errno("waitpid");
+    }
+
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    if (WIFSIGNALED(status)) {
+        return 128 + WTERMSIG(status);
+    }
+    return 1;
 }
