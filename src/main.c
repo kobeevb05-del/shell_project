@@ -128,14 +128,16 @@ static int process_input(const char *input, input_mode_t mode) {
     if (mode == MODE_TOKENS) {
         print_tokens(&tokens);
     } else {
-         ast_node_t *root;
-        parser_error_t parse_error;
-        if (!parser_parse(&tokens, &root, &parse_error)) {
+                parser_result_t result = parser_parse(&tokens);
+        if (!result.ok) {
             fprintf(stderr, "mysh: parser: byte %zu: %s\n",
-                    parse_error.position, parse_error.message);
+                    result.error.position, result.error.message);
             token_list_free(&tokens);
             return 2;
         }
+
+        ast_node_t *root = result.tree;
+        
         if (mode == MODE_AST) {
             ast_node_print(stdout, root);
         } else {

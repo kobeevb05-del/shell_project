@@ -42,7 +42,7 @@ typedef struct {
 typedef struct ast_node {
     ast_type_t type;
     ast_redirection_t *redirections;
-    size_t redirection_count;
+    size_t redirection_count; // для простых команд и для  sud_shell
     union {
         ast_simple_t *simple;
         struct {

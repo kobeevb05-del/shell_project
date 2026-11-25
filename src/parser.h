@@ -12,8 +12,14 @@ typedef struct {
     const char *message;
 } parser_error_t;
 
-bool parser_parse(const token_list_t *tokens,
-                  ast_node_t **result,
-                  parser_error_t *error);
+typedef struct {
+    bool ok;
+    union {
+        ast_node_t *tree;
+        parser_error_t error;
+    };
+} parser_result_t;
+
+parser_result_t parser_parse(const token_list_t *tokens);
 
 #endif

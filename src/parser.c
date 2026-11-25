@@ -8,7 +8,7 @@ enum { MAX_SUBSHELL_DEPTH = 1024 };
 
 typedef struct {
     const token_t *current;
-    parser_error_t *error;
+    parser_error_t error;
     size_t subshell_depth;
 } parser_t;
 
@@ -69,15 +69,11 @@ static bool parse_redirection(parser_t *parser, ast_node_t *node)
         parser_set_error(parser, "expected filename after redirection");
         return false;
     }
-    const char *path = parser->current->lexeme;
-    if (strncmp(path, "/dev/tcp/", sizeof("/dev/tcp/") - 1) == 0) {
-        parser_set_error(parser, "unsupported /dev/tcp redirection");
-        return false;
-    }
-    if (!ast_node_add_redirection(node, type, path)) {
+        if (!ast_node_add_redirection(node, type, parser->current->lexeme)) {
         parser_set_error(parser, "out of memory");
         return false;
     }
+
     ++parser->current;
     return true;
 }
@@ -147,10 +143,8 @@ static ast_node_t *join_nodes(parser_t *parser, ast_type_t type,
 
 static void parser_set_error(parser_t *parser, const char *message)
 {
-    if (parser->error != NULL) {
-        parser->error->position = parser->current->position;
-        parser->error->message = message;
-    }
+    parser->error.position = parser->current->position;
+    parser->error.message = message;
 }
 
 static bool parser_match(parser_t *parser, token_type_t expected)
@@ -272,27 +266,21 @@ static ast_node_t *parse_list(parser_t *parser)
     }
 }
 
-bool parser_parse(const token_list_t *tokens, ast_node_t **result,
-                  parser_error_t *error)
+parser_result_t parser_parse(const token_list_t *tokens)
 {
-    parser_t parser = {.current = tokens->tokens, .error = error};
-    *result = NULL;
-    if (error != NULL) {
-        *error = (parser_error_t){0};
-    }
+    parser_t parser = { .current = tokens->tokens };
+
     skip_newlines(&parser);
     if (parser.current->type == TOKEN_EOF) {
-        return true;
+        return (parser_result_t){ .ok = true, .tree = NULL };
     }
 
     ast_node_t *tree = parse_list(&parser);
-    if (tree == NULL) {
-        return false;
+    if (tree != NULL &&
+        parser_expect(&parser, TOKEN_EOF, "unexpected token after command")) {
+        return (parser_result_t){ .ok = true, .tree = tree };
     }
-    if (!parser_expect(&parser, TOKEN_EOF, "unexpected token after command")) {
+
     ast_node_free(tree);
-    return false;
-    }
-    *result = tree;
-    return true;
+    return (parser_result_t){ .ok = false, .error = parser.error };
 }
