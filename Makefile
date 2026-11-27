@@ -5,6 +5,8 @@ SOURCES = src/main.c src/lexer.c src/ast.c src/parser.c src/executor.c
 HEADERS = src/token.h src/lexer.h src/ast.h src/parser.h src/executor.h
 SOURCES += src/comm.c
 HEADERS += src/comm.h
+SOURCES += src/redir.c src/signals.c
+HEADERS += src/redir.h src/signals.h
 .PHONY: all debug clean test
 
 all: $(TARGET)

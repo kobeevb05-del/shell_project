@@ -1,46 +1,24 @@
 #include "executor.h"
 #include "comm.h"
+#include "redir.h"
+#include "signals.h"
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <fcntl.h>
-#include <signal.h>
 
-static int redirect_file(const char *path, int target, int flags)
+static int print_errno(const char *name)
 {
-    int fd;
-    do {
-        fd = open(path, flags, 0666);
-    } while (fd == -1 && errno == EINTR);
-
-    if (fd == -1) {
-        return -1;
-    }
-    if (fd == target) {
-        return 0;
-    }
-
-    int result;
-    do {
-        result = dup2(fd, target);
-    } while (result == -1 && errno == EINTR);
-
-    int dup_error = errno;
-    int close_result = close(fd);
-    if (result == -1) {
-        errno = dup_error;
-        return -1;
-    }
-    return close_result;
+    fprintf(stderr, "mysh: %s: %s\n", name, strerror(errno));
+    return 1;
 }
 
-/* Ищет команду без '/' в PATH.
- * При успехе не возвращается; при ошибке возвращает -1 и задаёт errno*/
+/* Ищет команду без '/' в PATH
+ При успехе не возвращается, при ошибке возвращает -1 и задаёт errno*/
 static int exec_from_path(const ast_simple_t *command)
 {
     if (command->argv[0][0] == '\0') {
@@ -63,14 +41,14 @@ static int exec_from_path(const ast_simple_t *command)
             ? strlen(directory)
             : (size_t)(separator - directory);
 
-        /* Проверяем размер до сложения: каталог, имя, '/' и '\0'. */
+        // Проверяем размер до сложения: каталог, имя, '/' и '\0'
         if (name_length > SIZE_MAX - 2 ||
             directory_length > SIZE_MAX - name_length - 2) {
             errno = ENAMETOOLONG;
             return -1;
         }
 
-        /* Пустой элемент PATH означает текущий каталог. */
+        // Пустой элемент PATH означает текущий каталог
         size_t prefix_length = directory_length == 0
             ? 0 : directory_length + 1;
 
@@ -108,43 +86,10 @@ static int exec_from_path(const ast_simple_t *command)
     errno = search_error;
     return -1;
 }
-static int print_errno(const char *name)
-{
-    fprintf(stderr, "mysh: %s: %s\n", name, strerror(errno));
-    return 1;
-}
 
-static int dup2_retry(int source, int target)
-{
-    int result;
-    do {
-        result = dup2(source, target);
-    } while (result == -1 && errno == EINTR);
-    if (result == -1) {
-        return print_errno("dup2");
-    }
-    return 0;
-}
-
-static int apply_redirections(const ast_node_t *node)
-{
-    for (size_t i = 0; i < node->redirection_count; ++i) {
-        const ast_redirection_t *redir = &node->redirections[i];
-        int target = STDOUT_FILENO;
-        int flags = O_WRONLY | O_CREAT | O_TRUNC;
-        if (redir->type == AST_REDIR_IN) {
-            target = STDIN_FILENO;
-            flags = O_RDONLY;
-        } else if (redir->type == AST_REDIR_APPEND) {
-            flags = O_WRONLY | O_CREAT | O_APPEND;
-        }
-        if (redirect_file(redir->path, target, flags) == -1) {
-            return print_errno(redir->path);
-        }
-    }
-    return 0;
-}
 typedef int (*builtin_fn)(const ast_simple_t *);
+
+// проверка на встроенную команду
 static builtin_fn find_builtin(const char *name)
 {
     if (strcmp(name, "cd") == 0) {
@@ -158,70 +103,91 @@ static builtin_fn find_builtin(const char *name)
     }
     return NULL;
 }
+
 static int run_builtin_in_parent(const ast_node_t *node, builtin_fn fn)
 {
     if (node->redirection_count == 0) {
         return fn(node->data.simple);
     }
-    int saved[2] = {-1, -1};
-    for (size_t i = 0; i < node->redirection_count; ++i) {
-        int target = node->redirections[i].type == AST_REDIR_IN
-            ? STDIN_FILENO : STDOUT_FILENO;
-        if (saved[target] != -1) {
-            continue;
-        }
-        do {
-            saved[target] = dup(target);
-        } while (saved[target] == -1 && errno == EINTR);
-        if (saved[target] == -1) {
-            print_errno("dup");
-            for (int k = 0; k < 2; ++k) {
-                if (saved[k] != -1) {
-                    close(saved[k]);
-                }
-            }
-            return 1;
-        }
+
+    int saved[2];
+    if (redir_save_std(node, saved) != 0) {
+        return 1;
     }
-    int status = apply_redirections(node);
+
+    int status = redir_apply(node);
     if (status == 0) {
         status = fn(node->data.simple);
     }
-    for (int fd = 0; fd < 2; ++fd) {
-        if (saved[fd] == -1) {
-            continue;
-        }
-        if (dup2_retry(saved[fd], fd) != 0) {
-            status = 1;
-        }
-        if (close(saved[fd]) == -1) {
-            status = print_errno("close");
-        }
+    if (redir_restore_std(saved) != 0) {
+        status = 1;
     }
     return status;
 }
+// настройка перенаправлений в ребенке, запуск встр/внеш ком
 static void run_child_stage(const ast_node_t *node)
 {
-    if (apply_redirections(node) != 0) {
+    if (redir_apply(node) != 0) {
         _exit(1);
     }
+
     const ast_simple_t *command = node->data.simple;
     builtin_fn fn = find_builtin(command->argv[0]);
     if (fn != NULL) {
         _exit(fn(command));
     }
+
     if (strchr(command->argv[0], '/') != NULL) {
         execv(command->argv[0], command->argv);
     } else {
         exec_from_path(command);
     }
+
     int code = errno == ENOENT ? 127 : 126;
     print_errno(command->argv[0]);
     _exit(code);
 }
 
-static int run_pipeline(const ast_node_t *node)
+static int wait_pipeline(size_t count, size_t started, const pid_t *pids)
 {
+    size_t remaining = started;
+    int last_status = 0;
+
+    while (remaining > 0) {
+        int status;
+        pid_t pid = waitpid(-1, &status, 0);
+        if (pid == -1 && errno == EINTR) {
+            continue;
+        }
+        if (pid == -1) {
+            return print_errno("waitpid");
+        }
+
+        for (size_t i = 0; i < started; ++i) {
+            if (pids[i] != pid) {
+                continue;
+            }
+            --remaining;
+            if (i + 1 == count) {
+                if (WIFEXITED(status)) {
+                    last_status = WEXITSTATUS(status);
+                } else if (WIFSIGNALED(status)) {
+                    last_status = 128 + WTERMSIG(status);
+                } else {
+                    last_status = 1;
+                }
+            }
+            break;
+        }
+    }
+
+    return last_status;
+}
+
+// запуск конвейера
+static int run_pipeline(const ast_node_t *node, bool background)
+{
+    // дерево | в массив
     size_t count = 1;
     for (const ast_node_t *p = node; p->type == AST_PIPE; p = p->data.binary.left) {
         ++count;
@@ -241,6 +207,13 @@ static int run_pipeline(const ast_node_t *node)
     }
     stages[0] = node;
 
+    sigset_t old_mask;
+    if (signals_block_chld(&old_mask) != 0) { // блок SIGCHLD
+        free(stages);
+        free(pids);
+        return 1;
+    }
+
     size_t started = 0;
     int prev_read = -1;
     int result = 0;
@@ -254,19 +227,25 @@ static int run_pipeline(const ast_node_t *node)
 
         pid_t pid = fork();
         if (pid == 0) {
+            if (signals_restore_mask(&old_mask) != 0) {
+                _exit(1);
+            }
+            //ребенок закрывает конец чтения нового потока
             if (pipe_fds[0] != -1 && close(pipe_fds[0]) == -1) {
                 _exit(print_errno("close"));
             }
+            // prev_read на вход
             if (prev_read != -1) {
-                if (dup2_retry(prev_read, STDIN_FILENO) != 0) {
+                if (redir_dup2(prev_read, STDIN_FILENO) != 0) {
                     _exit(1);
                 }
                 if (close(prev_read) == -1) {
                     _exit(print_errno("close"));
                 }
             }
+            // pipe_fds на выход
             if (pipe_fds[1] != -1) {
-                if (dup2_retry(pipe_fds[1], STDOUT_FILENO) != 0) {
+                if (redir_dup2(pipe_fds[1], STDOUT_FILENO) != 0) {
                     _exit(1);
                 }
                 if (close(pipe_fds[1]) == -1) {
@@ -282,6 +261,7 @@ static int run_pipeline(const ast_node_t *node)
             pids[started++] = pid;
         }
 
+        // родитель закрывает остатки
         if (prev_read != -1 && close(prev_read) == -1) {
             result = print_errno("close");
         }
@@ -307,47 +287,22 @@ static int run_pipeline(const ast_node_t *node)
         }
     }
 
-    size_t remaining = started;
-    int last_status = 0;
-
-    while (remaining > 0) {
-        int status;
-        pid_t pid = waitpid(-1, &status, 0);
-        if (pid == -1 && errno == EINTR) {
-            continue;
-        }
-        if (pid == -1) {
-            result = print_errno("waitpid");
-            break;
-        }
-
-        for (size_t i = 0; i < started; ++i) {
-            if (pids[i] != pid) {
-                continue;
-            }
-            --remaining;
-            if (i + 1 == count) {
-                if (WIFEXITED(status)) {
-                    last_status = WEXITSTATUS(status);
-                } else if (WIFSIGNALED(status)) {
-                    last_status = 128 + WTERMSIG(status);
-                } else {
-                    last_status = 1;
-                }
-            }
-            break;
+    if (!background || result != 0) {
+        int wait_res = wait_pipeline(count, started, pids);
+        if (result == 0) {
+            result = wait_res;
         }
     }
 
-    if (result == 0) {
-        result = last_status;
+    if (signals_restore_mask(&old_mask) != 0) {
+        result = 1;
     }
-
     free(stages);
     free(pids);
     return result;
 }
 
+// проверка узлов на работу с exec
 static bool is_supported(const ast_node_t *node)
 {
     if (node->type == AST_SIMPLE) {
@@ -356,6 +311,11 @@ static bool is_supported(const ast_node_t *node)
     if (node->type == AST_PIPE || node->type == AST_SEQUENCE) {
         return is_supported(node->data.binary.left) &&
                is_supported(node->data.binary.right);
+    }
+    if (node->type == AST_BACKGROUND) {
+        const ast_node_t *child = node->data.child;
+        return (child->type == AST_SIMPLE || child->type == AST_PIPE) &&
+               is_supported(child);
     }
     return false;
 }
@@ -366,13 +326,16 @@ static int run_node(const ast_node_t *node)
         run_node(node->data.binary.left);
         return run_node(node->data.binary.right);
     }
+    if (node->type == AST_BACKGROUND) {
+        return run_pipeline(node->data.child, true);
+    }
     if (node->type == AST_SIMPLE) {
         builtin_fn fn = find_builtin(node->data.simple->argv[0]);
         if (fn != NULL) {
             return run_builtin_in_parent(node, fn);
         }
     }
-    return run_pipeline(node);
+    return run_pipeline(node, false);
 }
 
 int executor_run(const ast_node_t *node)
@@ -383,6 +346,9 @@ int executor_run(const ast_node_t *node)
     if (!is_supported(node)) {
         fputs("mysh: executor: unsupported command syntax\n", stderr);
         return 2;
+    }
+    if (signals_init_background() != 0) {
+        return 1;
     }
     return run_node(node);
 }
