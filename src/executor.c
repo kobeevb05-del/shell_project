@@ -220,42 +220,169 @@ static void run_child_stage(const ast_node_t *node)
     _exit(code);
 }
 
+static int run_pipeline(const ast_node_t *node)
+{
+    size_t count = 1;
+    for (const ast_node_t *p = node; p->type == AST_PIPE; p = p->data.binary.left) {
+        ++count;
+    }
+
+    const ast_node_t **stages = calloc(count, sizeof(*stages));
+    pid_t *pids = calloc(count, sizeof(*pids));
+    if (stages == NULL || pids == NULL) {
+        free(stages);
+        free(pids);
+        return print_errno("calloc");
+    }
+
+    for (size_t i = count - 1; i > 0; --i) {
+        stages[i] = node->data.binary.right;
+        node = node->data.binary.left;
+    }
+    stages[0] = node;
+
+    size_t started = 0;
+    int prev_read = -1;
+    int result = 0;
+
+    for (size_t i = 0; i < count; ++i) {
+        int pipe_fds[2] = {-1, -1};
+        if (i + 1 < count && pipe(pipe_fds) == -1) {
+            result = print_errno("pipe");
+            break;
+        }
+
+        pid_t pid = fork();
+        if (pid == 0) {
+            if (pipe_fds[0] != -1 && close(pipe_fds[0]) == -1) {
+                _exit(print_errno("close"));
+            }
+            if (prev_read != -1) {
+                if (dup2_retry(prev_read, STDIN_FILENO) != 0) {
+                    _exit(1);
+                }
+                if (close(prev_read) == -1) {
+                    _exit(print_errno("close"));
+                }
+            }
+            if (pipe_fds[1] != -1) {
+                if (dup2_retry(pipe_fds[1], STDOUT_FILENO) != 0) {
+                    _exit(1);
+                }
+                if (close(pipe_fds[1]) == -1) {
+                    _exit(print_errno("close"));
+                }
+            }
+            run_child_stage(stages[i]);
+        }
+
+        if (pid == -1) {
+            result = print_errno("fork");
+        } else {
+            pids[started++] = pid;
+        }
+
+        if (prev_read != -1 && close(prev_read) == -1) {
+            result = print_errno("close");
+        }
+        if (pipe_fds[1] != -1 && close(pipe_fds[1]) == -1) {
+            result = print_errno("close");
+        }
+        prev_read = pipe_fds[0];
+
+        if (result != 0) {
+            break;
+        }
+    }
+
+    if (prev_read != -1 && close(prev_read) == -1) {
+        result = print_errno("close");
+    }
+
+    if (result != 0) {
+        for (size_t i = 0; i < started; ++i) {
+            if (kill(pids[i], SIGKILL) == -1 && errno != ESRCH) {
+                print_errno("kill");
+            }
+        }
+    }
+
+    size_t remaining = started;
+    int last_status = 0;
+
+    while (remaining > 0) {
+        int status;
+        pid_t pid = waitpid(-1, &status, 0);
+        if (pid == -1 && errno == EINTR) {
+            continue;
+        }
+        if (pid == -1) {
+            result = print_errno("waitpid");
+            break;
+        }
+
+        for (size_t i = 0; i < started; ++i) {
+            if (pids[i] != pid) {
+                continue;
+            }
+            --remaining;
+            if (i + 1 == count) {
+                if (WIFEXITED(status)) {
+                    last_status = WEXITSTATUS(status);
+                } else if (WIFSIGNALED(status)) {
+                    last_status = 128 + WTERMSIG(status);
+                } else {
+                    last_status = 1;
+                }
+            }
+            break;
+        }
+    }
+
+    if (result == 0) {
+        result = last_status;
+    }
+
+    free(stages);
+    free(pids);
+    return result;
+}
+
+static bool is_supported(const ast_node_t *node)
+{
+    if (node->type == AST_SIMPLE) {
+        return true;
+    }
+    if (node->type == AST_PIPE || node->type == AST_SEQUENCE) {
+        return is_supported(node->data.binary.left) &&
+               is_supported(node->data.binary.right);
+    }
+    return false;
+}
+
+static int run_node(const ast_node_t *node)
+{
+    if (node->type == AST_SEQUENCE) {
+        run_node(node->data.binary.left);
+        return run_node(node->data.binary.right);
+    }
+    if (node->type == AST_SIMPLE) {
+        builtin_fn fn = find_builtin(node->data.simple->argv[0]);
+        if (fn != NULL) {
+            return run_builtin_in_parent(node, fn);
+        }
+    }
+    return run_pipeline(node);
+}
+
 int executor_run(const ast_node_t *node)
 {
     if (node == NULL) {
         return 0;
     }
-    if (node->type != AST_SIMPLE) {
+    if (!is_supported(node)) {
         fputs("mysh: executor: unsupported command syntax\n", stderr);
         return 2;
     }
-
-    builtin_fn fn = find_builtin(node->data.simple->argv[0]);
-    if (fn != NULL) {
-        return run_builtin_in_parent(node, fn);
-    }
-
-    pid_t pid = fork();
-    if (pid == -1) {
-        return print_errno("fork");
-    }
-    if (pid == 0) {
-        run_child_stage(node);
-    }
-
-    int status;
-    while (waitpid(pid, &status, 0) == -1) {
-        if (errno == EINTR) {
-            continue;
-        }
-        return print_errno("waitpid");
-    }
-
-    if (WIFEXITED(status)) {
-        return WEXITSTATUS(status);
-    }
-    if (WIFSIGNALED(status)) {
-        return 128 + WTERMSIG(status);
-    }
-    return 1;
+    return run_node(node);
 }
