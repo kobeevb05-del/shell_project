@@ -124,11 +124,17 @@ static int run_builtin_in_parent(const ast_node_t *node, builtin_fn fn)
     }
     return status;
 }
-// настройка перенаправлений в ребенке, запуск встр/внеш ком
+
+static int run_node(const ast_node_t *node);
+
+// настройка перенаправлений в ребенке, запуск подоболочки или команды
 static void run_child_stage(const ast_node_t *node)
 {
     if (redir_apply(node) != 0) {
         _exit(1);
+    }
+    if (node->type == AST_SUBSHELL) {
+        _exit(run_node(node->data.child));
     }
 
     const ast_simple_t *command = node->data.simple;
@@ -305,37 +311,69 @@ static int run_pipeline(const ast_node_t *node, bool background)
 // проверка узлов на работу с exec
 static bool is_supported(const ast_node_t *node)
 {
-    if (node->type == AST_SIMPLE) {
+    switch (node->type) {
+    case AST_SIMPLE:
         return true;
-    }
-    if (node->type == AST_PIPE || node->type == AST_SEQUENCE) {
+    case AST_PIPE:
+    case AST_SEQUENCE:
+    case AST_AND:
+    case AST_OR:
         return is_supported(node->data.binary.left) &&
                is_supported(node->data.binary.right);
-    }
-    if (node->type == AST_BACKGROUND) {
-        const ast_node_t *child = node->data.child;
-        return (child->type == AST_SIMPLE || child->type == AST_PIPE) &&
-               is_supported(child);
+    case AST_BACKGROUND:
+    case AST_SUBSHELL:
+        return is_supported(node->data.child);
     }
     return false;
 }
 
+// запуск фонового элемента (&): конвейеры через run_pipeline, остальное через fork
+static int run_background(const ast_node_t *node)
+{
+    if (node->type == AST_SIMPLE || node->type == AST_PIPE ||
+        node->type == AST_SUBSHELL) {
+        return run_pipeline(node, true);
+    }
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        return print_errno("fork");
+    }
+    if (pid == 0) {
+        _exit(run_node(node));
+    }
+    return 0;
+}
+
+// выполнение узла AST: списки, условия &&/||, фон &, встроенные и конвейеры
 static int run_node(const ast_node_t *node)
 {
-    if (node->type == AST_SEQUENCE) {
+    switch (node->type) {
+    case AST_SEQUENCE:
         run_node(node->data.binary.left);
         return run_node(node->data.binary.right);
+    case AST_AND: {
+        int status = run_node(node->data.binary.left);
+        return status == 0 ? run_node(node->data.binary.right) : status;
     }
-    if (node->type == AST_BACKGROUND) {
-        return run_pipeline(node->data.child, true);
+    case AST_OR: {
+        int status = run_node(node->data.binary.left);
+        return status != 0 ? run_node(node->data.binary.right) : status;
     }
-    if (node->type == AST_SIMPLE) {
+    case AST_BACKGROUND:
+        return run_background(node->data.child);
+    case AST_SIMPLE: {
         builtin_fn fn = find_builtin(node->data.simple->argv[0]);
         if (fn != NULL) {
             return run_builtin_in_parent(node, fn);
         }
+        return run_pipeline(node, false);
     }
-    return run_pipeline(node, false);
+    case AST_PIPE:
+    case AST_SUBSHELL:
+        return run_pipeline(node, false);
+    }
+    return 2;
 }
 
 int executor_run(const ast_node_t *node)

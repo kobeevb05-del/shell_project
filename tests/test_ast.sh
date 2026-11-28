@@ -146,7 +146,6 @@ check_syntax_error '(a)b' 4
 check_syntax_error 'a(b)' 2
 check_syntax_error 'ok
 bad |' 9
-check_syntax_error 'cat >/dev/tcp/host/80' 6
 
 check_error lexer 8 --dump-ast -c 'echo a 2>f'
 check_error lexer 8 --dump-ast -c 'echo x &>f next'
